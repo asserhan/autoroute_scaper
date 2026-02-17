@@ -15,7 +15,8 @@ LIST_URL = "https://achats.adm.co.ma/?page=entreprise.EntrepriseAdvancedSearch&A
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     "Accept-Language": "fr-FR,fr;q=0.9",
-    "Referer": BASE_URL
+    "Referer": BASE_URL,
+    "Content-Type": "application/x-www-form-urlencoded"
 }
 
 
@@ -140,11 +141,39 @@ def extract_tender_from_card(card_div):
 
 
 def fetch_list_page(session):
-    """Fetch the tender list page"""
-    print("Fetching list page...")
+    """Fetch the tender list page with 500 results per page"""
+    print("Fetching list page with 500 results per page...")
+    
+    # Payload to set page size to 500
+    payload = {
+        'ctl0$CONTENU_PAGE$resultSearch$listePageSizeTop': '500',
+        'ctl0$CONTENU_PAGE$resultSearch$listePageSizeBottom': '500',
+    }
+    
+    # First, make a GET request to get the initial page and extract PRADO_PAGESTATE
     response = session.get(LIST_URL, headers=HEADERS, timeout=30)
     response.raise_for_status()
-    return response.text
+    
+    # Parse the page to get PRADO_PAGESTATE
+    soup = BeautifulSoup(response.text, "lxml")
+    pagestate_input = soup.find('input', {'name': 'PRADO_PAGESTATE'})
+    
+    if pagestate_input:
+        pagestate = pagestate_input.get('value', '')
+        print(f"  ✓ Got PRADO_PAGESTATE (length: {len(pagestate)})")
+        
+        # Now make a POST request with the pagestate and page size
+        payload['PRADO_PAGESTATE'] = pagestate
+        payload['PRADO_POSTBACK_TARGET'] = 'ctl0$CONTENU_PAGE$resultSearch$listePageSizeTop'
+        
+        print("  Requesting 500 results...")
+        response = session.post(LIST_URL, data=payload, headers=HEADERS, timeout=30)
+        response.raise_for_status()
+        
+        return response.text
+    else:
+        print("  ⚠ Could not find PRADO_PAGESTATE, using initial page")
+        return response.text
 
 
 def extract_all_tenders(html):
@@ -255,11 +284,28 @@ def main():
 
     try:
         html = fetch_list_page(session)
+        
+        # Parse to check total number of results
+        soup = BeautifulSoup(html, "lxml")
+        nombre_element = soup.find('span', id='ctl0_CONTENU_PAGE_resultSearch_nombreElement')
+        
+        total_results = 0
+        if nombre_element:
+            total_results = int(nombre_element.get_text().strip())
+            print(f"\n📊 Total results found: {total_results}")
+        
         tenders = extract_all_tenders(html)
 
         if not tenders:
             print("⚠ No tenders found.")
             return
+        
+        # Check if we need to fetch more pages
+        if total_results > 500:
+            print(f"\n⚠ Warning: There are {total_results} total results.")
+            print(f"   Currently fetched: {len(tenders)} tenders")
+            print(f"   Note: This script fetches up to 500 results per page.")
+            print(f"   To get all results, you may need to implement multi-page fetching.")
 
         # Save to both CSV and JSON
         save_to_csv(tenders, "adm_tenders.csv")
